@@ -34,6 +34,7 @@ Default Wi-Fi access point:
 - Each sensor can be assigned a display number and min/max temperature limits.
 - Configuration is stored in ESP32 NVS preferences.
 - Sensor readings are refreshed every 30 seconds.
+- Each sensor keeps a rolling 24-hour temperature history in RAM.
 - Blue LED turns on when at least one sensor is too cold.
 - Red LED turns on when at least one sensor is too hot.
 - Both LEDs turn on when there is a sensor read failure.
@@ -55,6 +56,7 @@ The web interface shows:
 - discovered sensor ROM addresses
 - assigned sensor numbers
 - current temperatures
+- 24-hour temperature history graphs
 - configured min/max limits
 - current alarm state
 
@@ -62,8 +64,10 @@ The active root page is currently the Croatian interface. An English page exists
 in the firmware and can be enabled by switching the root handler in
 `setupWifiAccessPoint()`.
 
-The JSON API at `/api/sensors` returns the same sensor state for external tools
-or integrations.
+The JSON API at `/api/sensors` returns the current sensor state for external
+tools or integrations. Per-sensor history is available from
+`/api/history?index=0`, with samples returned from oldest to newest and `null`
+used for invalid readings.
 
 ## Build
 

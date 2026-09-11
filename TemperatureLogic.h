@@ -4,6 +4,8 @@
 
 constexpr int MAX_SENSORS = 10;
 
+constexpr unsigned long SENSOR_INTERVAL_MS = 30000;
+
 constexpr float DEFAULT_MIN_TEMP = 15.0f;
 constexpr float DEFAULT_MAX_TEMP = 18.0f;
 
@@ -22,6 +24,11 @@ constexpr float VALID_MIN_TEMP = -10.0f;
 constexpr float VALID_MAX_TEMP = 60.0f;
 
 constexpr float SENSOR_DISCONNECTED_C = -127.0f;
+
+constexpr int HISTORY_HOURS = 24;
+constexpr int HISTORY_SAMPLE_COUNT =
+  static_cast<int>((HISTORY_HOURS * 60UL * 60UL * 1000UL) / SENSOR_INTERVAL_MS);
+constexpr int16_t HISTORY_INVALID_TEMPERATURE = INT16_MIN;
 
 enum class AlarmState : uint8_t {
   OK,
@@ -51,6 +58,37 @@ inline bool isValidTemperature(float temperature) {
   }
 
   return true;
+}
+
+inline int16_t encodeHistoryTemperature(float temperature, bool valid) {
+  if (!valid) {
+    return HISTORY_INVALID_TEMPERATURE;
+  }
+
+  float centiC = temperature * 100.0f;
+  if (centiC >= 0.0f) {
+    centiC += 0.5f;
+  } else {
+    centiC -= 0.5f;
+  }
+
+  return static_cast<int16_t>(centiC);
+}
+
+inline float decodeHistoryTemperature(int16_t encodedTemperature) {
+  return encodedTemperature / 100.0f;
+}
+
+inline int historyOldestIndex(int nextIndex, int count) {
+  if (count < HISTORY_SAMPLE_COUNT) {
+    return 0;
+  }
+
+  return nextIndex;
+}
+
+inline int historyPhysicalIndex(int oldestIndex, int offset) {
+  return (oldestIndex + offset) % HISTORY_SAMPLE_COUNT;
 }
 
 template <typename SensorLike>

@@ -20,9 +20,6 @@ constexpr uint8_t RED_LED_PIN = 6;
 constexpr uint8_t BUZZER_PIN = 7;
 constexpr uint8_t PUMP_PIN = 10;
 
-// Sensor polling
-constexpr unsigned long SENSOR_INTERVAL_MS = 30000;
-
 // ============================================================
 // GLOBAL OBJECTS
 // ============================================================
@@ -49,6 +46,10 @@ struct SensorInfo {
   float maxTemp;
 
   AlarmState alarmState;
+
+  int16_t history[HISTORY_SAMPLE_COUNT];
+  int historyNext;
+  int historyCount;
 };
 
 SensorInfo discoveredSensors[MAX_SENSORS];
@@ -150,6 +151,8 @@ void discoverSensors() {
     sensor.temperature = 0.0f;
     sensor.valid = false;
     sensor.alarmState = AlarmState::SENSOR_ERROR;
+    sensor.historyNext = 0;
+    sensor.historyCount = 0;
 
     Serial.printf(
       "Sensor %d: %s | assigned=%d | min=%.2f | max=%.2f\n",
@@ -167,6 +170,17 @@ void discoverSensors() {
       "WARNING: %d device(s) found but MAX_SENSORS is %d\n",
       discovered,
       MAX_SENSORS);
+  }
+}
+
+void recordTemperatureHistory(SensorInfo& sensor) {
+  sensor.history[sensor.historyNext] =
+    encodeHistoryTemperature(sensor.temperature, sensor.valid);
+
+  sensor.historyNext = (sensor.historyNext + 1) % HISTORY_SAMPLE_COUNT;
+
+  if (sensor.historyCount < HISTORY_SAMPLE_COUNT) {
+    sensor.historyCount++;
   }
 }
 
@@ -232,6 +246,7 @@ void checkTemperatures() {
     sensor.valid = isValidTemperature(temperature);
 
     updateSensorAlarmState(sensor);
+    recordTemperatureHistory(sensor);
 
     Serial.printf(
       "%s | number=%d | ",
@@ -368,6 +383,14 @@ th, td {
   font-size: 18px;
 }
 
+.history-canvas {
+  width: 220px;
+  height: 72px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  display: block;
+}
+
 .ok {
   color: #2e7d32;
   font-weight: bold;
@@ -496,6 +519,7 @@ Discovered DS18B20 sensors on the 1-Wire bus
   <th>Min</th>
   <th>Max</th>
   <th>Status</th>
+  <th>24h history</th>
   <th>Configuration</th>
 </tr>
 )rawliteral";
@@ -552,6 +576,15 @@ Discovered DS18B20 sensors on the 1-Wire bus
     html += alarmStateToText(sensor.alarmState);
     html += "</td>";
 
+    // History graph
+    html += "<td>";
+    html += "<canvas class='history-canvas' id='history-";
+    html += String(i);
+    html += "' width='220' height='72' data-sensor-index='";
+    html += String(i);
+    html += "'></canvas>";
+    html += "</td>";
+
     // Configuration form
     html += "<td>";
 
@@ -605,6 +638,82 @@ Red LED = at least one sensor too hot.<br>
 Both LEDs = sensor read failure.<br>
 Buzzer = any cold, hot, or sensor-error condition.
 </p>
+
+<script>
+function drawHistory(canvas, samples) {
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.strokeStyle = '#d0d7de';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, height - 0.5);
+  ctx.lineTo(width, height - 0.5);
+  ctx.stroke();
+
+  const values = samples.filter((value) => value !== null);
+  if (values.length === 0) {
+    ctx.fillStyle = '#666';
+    ctx.font = '12px Arial';
+    ctx.fillText('No history yet', 8, 40);
+    return;
+  }
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (Math.abs(max - min) < 0.1) {
+    min -= 0.5;
+    max += 0.5;
+  }
+
+  ctx.strokeStyle = '#1565c0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+
+  let drawing = false;
+  samples.forEach((value, index) => {
+    if (value === null) {
+      drawing = false;
+      return;
+    }
+
+    const x = samples.length === 1 ? width - 1 : (index / (samples.length - 1)) * (width - 1);
+    const y = height - 5 - ((value - min) / (max - min)) * (height - 10);
+
+    if (!drawing) {
+      ctx.moveTo(x, y);
+      drawing = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+
+  ctx.stroke();
+
+  ctx.fillStyle = '#444';
+  ctx.font = '10px Arial';
+  ctx.fillText(max.toFixed(1) + ' C', 4, 11);
+  ctx.fillText(min.toFixed(1) + ' C', 4, height - 5);
+}
+
+function loadHistoryGraphs() {
+  document.querySelectorAll('canvas[data-sensor-index]').forEach((canvas) => {
+    fetch('/api/history?index=' + encodeURIComponent(canvas.dataset.sensorIndex))
+      .then((response) => response.json())
+      .then((history) => drawHistory(canvas, history.samples || []))
+      .catch(() => {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#8e24aa';
+        ctx.font = '12px Arial';
+        ctx.fillText('History error', 8, 40);
+      });
+  });
+}
+
+loadHistoryGraphs();
+</script>
 
 </div>
 </body>
@@ -691,6 +800,14 @@ th, td {
 .temperature {
   font-weight: bold;
   font-size: 18px;
+}
+
+.history-canvas {
+  width: 220px;
+  height: 72px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  display: block;
 }
 
 .ok {
@@ -817,6 +934,7 @@ Spojeni DS18B20 temperaturni senzori
   <th>Min</th>
   <th>Max</th>
   <th>Status</th>
+  <th>24h povijest</th>
   <th>Postavke</th>
 </tr>
 )rawliteral";
@@ -868,6 +986,15 @@ Spojeni DS18B20 temperaturni senzori
     html += alarmStateToText(sensor.alarmState);
     html += "</td>";
 
+    // History graph
+    html += "<td>";
+    html += "<canvas class='history-canvas' id='history-";
+    html += String(i);
+    html += "' width='220' height='72' data-sensor-index='";
+    html += String(i);
+    html += "'></canvas>";
+    html += "</td>";
+
     // Configuration form
     html += "<td>";
     html += "<form method='POST' action='/configure'>";
@@ -917,6 +1044,82 @@ Crvena LED = barem jedna temperatura je previsoka<br>
 Obje LED = greska sa citanjem senzora<br>
 Buzzer = bilo koji alarm
 </p>
+
+<script>
+function drawHistory(canvas, samples) {
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.strokeStyle = '#d0d7de';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, height - 0.5);
+  ctx.lineTo(width, height - 0.5);
+  ctx.stroke();
+
+  const values = samples.filter((value) => value !== null);
+  if (values.length === 0) {
+    ctx.fillStyle = '#666';
+    ctx.font = '12px Arial';
+    ctx.fillText('Nema povijesti', 8, 40);
+    return;
+  }
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (Math.abs(max - min) < 0.1) {
+    min -= 0.5;
+    max += 0.5;
+  }
+
+  ctx.strokeStyle = '#1565c0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+
+  let drawing = false;
+  samples.forEach((value, index) => {
+    if (value === null) {
+      drawing = false;
+      return;
+    }
+
+    const x = samples.length === 1 ? width - 1 : (index / (samples.length - 1)) * (width - 1);
+    const y = height - 5 - ((value - min) / (max - min)) * (height - 10);
+
+    if (!drawing) {
+      ctx.moveTo(x, y);
+      drawing = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+
+  ctx.stroke();
+
+  ctx.fillStyle = '#444';
+  ctx.font = '10px Arial';
+  ctx.fillText(max.toFixed(1) + ' C', 4, 11);
+  ctx.fillText(min.toFixed(1) + ' C', 4, height - 5);
+}
+
+function loadHistoryGraphs() {
+  document.querySelectorAll('canvas[data-sensor-index]').forEach((canvas) => {
+    fetch('/api/history?index=' + encodeURIComponent(canvas.dataset.sensorIndex))
+      .then((response) => response.json())
+      .then((history) => drawHistory(canvas, history.samples || []))
+      .catch(() => {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#8e24aa';
+        ctx.font = '12px Arial';
+        ctx.fillText('Greska povijesti', 8, 40);
+      });
+  });
+}
+
+loadHistoryGraphs();
+</script>
 
 </div>
 </body>
@@ -1071,6 +1274,91 @@ void handleApi() {
   server.send(200, "application/json", json);
 }
 
+void sendJsonEscapedString(const String& value) {
+  server.sendContent("\"");
+
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if (c == '"' || c == '\\') {
+      char escaped[] = {'\\', c, '\0'};
+      server.sendContent(escaped);
+    } else {
+      char plain[] = {c, '\0'};
+      server.sendContent(plain);
+    }
+  }
+
+  server.sendContent("\"");
+}
+
+void handleHistoryApi() {
+  if (!server.hasArg("index")) {
+    server.send(400, "text/plain", "Missing sensor index");
+    return;
+  }
+
+  int index = server.arg("index").toInt();
+
+  if (index < 0 || index >= sensorCount) {
+    server.send(400, "text/plain", "Invalid sensor index");
+    return;
+  }
+
+  const SensorInfo& sensor = discoveredSensors[index];
+  int oldestIndex = historyOldestIndex(sensor.historyNext, sensor.historyCount);
+
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
+
+  server.sendContent("{\"index\":");
+  server.sendContent(String(index));
+
+  server.sendContent(",\"address\":");
+  sendJsonEscapedString(sensor.addressString);
+
+  server.sendContent(",\"number\":");
+  if (sensor.assignedNumber >= 0) {
+    server.sendContent(String(sensor.assignedNumber));
+  } else {
+    server.sendContent("null");
+  }
+
+  server.sendContent(",\"sampleIntervalMs\":");
+  server.sendContent(String(SENSOR_INTERVAL_MS));
+
+  server.sendContent(",\"hours\":");
+  server.sendContent(String(HISTORY_HOURS));
+
+  server.sendContent(",\"count\":");
+  server.sendContent(String(sensor.historyCount));
+
+  server.sendContent(",\"samples\":[");
+
+  char numberBuffer[16];
+
+  for (int i = 0; i < sensor.historyCount; i++) {
+    if (i > 0) {
+      server.sendContent(",");
+    }
+
+    int physicalIndex = historyPhysicalIndex(oldestIndex, i);
+    int16_t encodedTemperature = sensor.history[physicalIndex];
+
+    if (encodedTemperature == HISTORY_INVALID_TEMPERATURE) {
+      server.sendContent("null");
+    } else {
+      snprintf(
+        numberBuffer,
+        sizeof(numberBuffer),
+        "%.2f",
+        decodeHistoryTemperature(encodedTemperature));
+      server.sendContent(numberBuffer);
+    }
+  }
+
+  server.sendContent("]}");
+}
+
 // ============================================================
 // OPTIONAL NOT-FOUND HANDLER
 // ============================================================
@@ -1122,6 +1410,7 @@ void setupWifiAccessPoint() {
   server.on("/configure", HTTP_POST, handleConfigure);
   server.on("/rescan", HTTP_POST, handleRescan);
   server.on("/api/sensors", HTTP_GET, handleApi);
+  server.on("/api/history", HTTP_GET, handleHistoryApi);
 
   server.onNotFound(handleNotFound);
 

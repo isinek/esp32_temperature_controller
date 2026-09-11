@@ -92,6 +92,22 @@ void testRomAddressHash() {
   assert(hashRomAddress(address) == 0x6BF6A41D);
 }
 
+void testHistoryTemperatureEncoding() {
+  assert(HISTORY_SAMPLE_COUNT == 2880);
+  assert(encodeHistoryTemperature(21.234f, true) == 2123);
+  assert(encodeHistoryTemperature(21.235f, true) == 2124);
+  assert(encodeHistoryTemperature(-3.456f, true) == -346);
+  assert(encodeHistoryTemperature(25.0f, false) == HISTORY_INVALID_TEMPERATURE);
+  assert(decodeHistoryTemperature(2125) == 21.25f);
+}
+
+void testHistoryIndexing() {
+  assert(historyOldestIndex(12, 12) == 0);
+  assert(historyOldestIndex(12, HISTORY_SAMPLE_COUNT) == 12);
+  assert(historyPhysicalIndex(HISTORY_SAMPLE_COUNT - 1, 0) == HISTORY_SAMPLE_COUNT - 1);
+  assert(historyPhysicalIndex(HISTORY_SAMPLE_COUNT - 1, 1) == 0);
+}
+
 int main() {
   testTemperatureValidation();
   testAlarmTransitions();
@@ -99,6 +115,8 @@ int main() {
   testHotAlarmHysteresis();
   testStateLabels();
   testRomAddressHash();
+  testHistoryTemperatureEncoding();
+  testHistoryIndexing();
 
   std::cout << "All temperature logic tests passed\n";
   return 0;
