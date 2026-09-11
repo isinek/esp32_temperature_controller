@@ -4,6 +4,8 @@
 #include <DallasTemperature.h>
 #include <Preferences.h>
 
+#include "TemperatureLogic.h"
+
 // ============================================================
 // USER CONFIGURATION
 // ============================================================
@@ -21,28 +23,6 @@ constexpr uint8_t PUMP_PIN = 10;
 // Sensor polling
 constexpr unsigned long SENSOR_INTERVAL_MS = 30000;
 
-// Maximum number of simultaneously discovered DS18B20 sensors
-constexpr int MAX_SENSORS = 10;
-
-// Defaults for newly discovered/unconfigured sensors
-constexpr float DEFAULT_MIN_TEMP = 15.0f;
-constexpr float DEFAULT_MAX_TEMP = 18.0f;
-
-// Fixed hysteresis around each configured limit.
-// Example:
-//   min = 6.0 C
-//   cold alarm turns ON below 6.0 C
-//   cold alarm clears above 6.3 C
-//
-//   max = 15.0 C
-//   hot alarm turns ON above 15.0 C
-//   hot alarm clears below 14.7 C
-constexpr float ALARM_HYSTERESIS = 0.3f;
-
-// Sanity range used to reject obviously invalid readings
-constexpr float VALID_MIN_TEMP = -10.0f;
-constexpr float VALID_MAX_TEMP = 60.0f;
-
 // ============================================================
 // GLOBAL OBJECTS
 // ============================================================
@@ -55,13 +35,6 @@ Preferences preferences;
 // ============================================================
 // SENSOR MODEL
 // ============================================================
-
-enum class AlarmState : uint8_t {
-  OK,
-  TOO_COLD,
-  TOO_HOT,
-  SENSOR_ERROR
-};
 
 struct SensorInfo {
   DeviceAddress address;
@@ -98,23 +71,6 @@ String addressToString(const uint8_t* address) {
     address[4], address[5], address[6], address[7]);
 
   return String(buffer);
-}
-
-// FNV-1a 32-bit hash over all 8 bytes of the ROM address.
-// Preferences keys are length-limited, so this gives us a short
-// deterministic key based on the complete 64-bit sensor identity.
-//
-// Example key base:
-//   sA1B2C3D4
-uint32_t hashRomAddress(const uint8_t* address) {
-  uint32_t hash = 2166136261UL;
-
-  for (int i = 0; i < 8; i++) {
-    hash ^= address[i];
-    hash *= 16777619UL;
-  }
-
-  return hash;
 }
 
 String sensorKeyBase(const uint8_t* address) {
@@ -177,7 +133,6 @@ void discoverSensors() {
   DeviceAddress address;
 
   for (int i = 0; i < discovered && sensorCount < MAX_SENSORS; i++) {
-
     if (!ds18b20.getAddress(address, i)) {
       Serial.printf("Could not read address for device index %d\n", i);
       continue;
@@ -212,71 +167,6 @@ void discoverSensors() {
       "WARNING: %d device(s) found but MAX_SENSORS is %d\n",
       discovered,
       MAX_SENSORS);
-  }
-}
-
-// ============================================================
-// SENSOR VALIDATION
-// ============================================================
-
-bool isValidTemperature(float temperature) {
-  if (temperature == DEVICE_DISCONNECTED_C) {
-    return false;
-  }
-
-  if (temperature < VALID_MIN_TEMP || temperature > VALID_MAX_TEMP) {
-    return false;
-  }
-
-  return true;
-}
-
-// ============================================================
-// ALARM LOGIC WITH HYSTERESIS
-// ============================================================
-
-void updateSensorAlarmState(SensorInfo& sensor) {
-  if (!sensor.valid) {
-    sensor.alarmState = AlarmState::SENSOR_ERROR;
-    return;
-  }
-
-  switch (sensor.alarmState) {
-    case AlarmState::TOO_COLD:
-      if (sensor.temperature > sensor.minTemp + ALARM_HYSTERESIS) {
-        sensor.alarmState = AlarmState::OK;
-      }
-      break;
-    case AlarmState::TOO_HOT:
-      if (sensor.temperature < sensor.maxTemp - ALARM_HYSTERESIS) {
-        sensor.alarmState = AlarmState::OK;
-      }
-      break;
-    case AlarmState::SENSOR_ERROR:
-    case AlarmState::OK:
-    default:
-      if (sensor.temperature < sensor.minTemp) {
-        sensor.alarmState = AlarmState::TOO_COLD;
-      } else if (sensor.temperature > sensor.maxTemp) {
-        sensor.alarmState = AlarmState::TOO_HOT;
-      } else {
-        sensor.alarmState = AlarmState::OK;
-      }
-      break;
-  }
-}
-
-const char* alarmStateToText(AlarmState state) {
-  switch (state) {
-    case AlarmState::TOO_COLD:
-      return "TOO COLD";
-    case AlarmState::TOO_HOT:
-      return "TOO HOT";
-    case AlarmState::SENSOR_ERROR:
-      return "SENSOR ERROR";
-    case AlarmState::OK:
-    default:
-      return "OK";
   }
 }
 
@@ -376,20 +266,6 @@ String htmlEscape(const String& value) {
   result.replace("\"", "&quot;");
 
   return result;
-}
-
-String stateCssClass(AlarmState state) {
-  switch (state) {
-    case AlarmState::TOO_COLD:
-      return "cold";
-    case AlarmState::TOO_HOT:
-      return "hot";
-    case AlarmState::SENSOR_ERROR:
-      return "error";
-    case AlarmState::OK:
-    default:
-      return "ok";
-  }
 }
 
 bool assignedNumberAlreadyUsed(int number, int exceptIndex) {

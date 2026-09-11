@@ -4,6 +4,16 @@ compile:
 		--fqbn esp32:esp32:XIAO_ESP32C3 \
 		./
 
+test:
+	g++ \
+		-std=c++17 \
+		-Wall \
+		-Wextra \
+		-pedantic \
+		tests/temperature_logic_test.cpp \
+		-o /tmp/temperature_logic_test
+	/tmp/temperature_logic_test
+
 upload:
 	arduino-cli upload \
 		--config-file ~/.arduino15/arduino-cli.yaml \
