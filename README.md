@@ -151,11 +151,20 @@ programming. Do not connect any 5 V UART signal to the CB2S.
 
 ### Controlling OpenBeken from the temperature controller
 
-The firmware controls OpenBeken locally over HTTP. Configure OpenBeken to join
-the `TEMPERATURE_CONTROLLER` access point, give it a fixed address of
-`192.168.10.2`, and configure its relay as channel 1. If another address is
-used, update `OPENBEKEN_IP` near the top of `temperature_controller.ino` before
-building.
+The firmware controls OpenBeken locally over HTTP. In OpenBeken, open
+**Config → WiFi**, join the `TEMPERATURE_CONTROLLER` access point, and use the
+following static network settings:
+
+| Setting | Value |
+| --- | --- |
+| IP address | `192.168.10.2` |
+| Netmask | `255.255.255.0` |
+| Gateway | `192.168.10.1` |
+| DNS server | `192.168.10.1` |
+
+Save the configuration and reboot OpenBeken. Configure its relay as channel 1.
+If another address is used, update `OPENBEKEN_IP` near the top of
+`temperature_controller.ino` before building.
 
 The controller web page provides **Manual ON**, **Manual OFF**, and **AUTO**
 buttons. The selected mode is retained in NVS across ESP32 restarts. AUTO uses
@@ -171,3 +180,25 @@ OFF has priority when sensors disagree. This avoids powering the load when a
 sensor is too cold or cannot be read. Commands use OpenBeken's
 Tasmota-compatible HTTP endpoint, for example
 `http://192.168.10.2/cm?cmnd=POWER%20ON`.
+
+#### Troubleshooting: OpenBeken says ON, but output remains at 0 V
+
+An HTTP success response confirms only that OpenBeken accepted the command; it
+does not confirm that the physical relay changed. First command the switch
+directly from the OpenBeken web page, or open
+`http://192.168.10.2/cm?cmnd=POWER%20ON`. The relay should click.
+
+If it does not click, open **Config → Configure Module**, set the documented
+DS-1311WN CB2S pin roles below, then save and reboot:
+
+| Pin | Role | Channel |
+| --- | --- | --- |
+| P8 | `Rel` | 1 |
+| P7 | `WifiLED_n` | 0 |
+| P11 | `Btn_Tgl_All` | 0 |
+| P26 | `TglChanOnTgl` | 1 |
+
+If the relay clicks but the output is still 0 V, check the mains installation.
+This device does not generate voltage: it switches the incoming live conductor
+to its output. Measure switched `L OUT` to `N`, and only work on mains wiring
+when it is isolated and you are qualified to do so.
