@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Preferences.h>
@@ -12,6 +13,9 @@
 
 const char* AP_SSID = "TEMPERATURE_CONTROLLER";
 const char* AP_PASSWORD = "00000000";
+
+// Configure OpenBeken to join this access point with this static address.
+const char* OPENBEKEN_IP = "192.168.10.2";
 
 // GPIO assignments
 constexpr uint8_t ONE_WIRE_PIN = 4;
@@ -56,6 +60,17 @@ SensorInfo discoveredSensors[MAX_SENSORS];
 int sensorCount = 0;
 
 unsigned long lastSensorRead = 0;
+
+enum class Cb2sControlMode : uint8_t {
+  MANUAL_OFF,
+  MANUAL_ON,
+  AUTO
+};
+
+Cb2sControlMode cb2sControlMode = Cb2sControlMode::MANUAL_OFF;
+bool cb2sStateKnown = false;
+bool cb2sPowerOn = false;
+String cb2sLastResult = "Not commanded yet";
 
 // ============================================================
 // ADDRESS / ID HELPERS
@@ -115,6 +130,116 @@ void saveSensorConfiguration(
   preferences.putInt((base + "n").c_str(), assignedNumber);
   preferences.putFloat((base + "l").c_str(), minTemp);
   preferences.putFloat((base + "h").c_str(), maxTemp);
+}
+
+const char* cb2sControlModeText(Cb2sControlMode mode) {
+  switch (mode) {
+    case Cb2sControlMode::MANUAL_ON:
+      return "MANUAL ON";
+    case Cb2sControlMode::AUTO:
+      return "AUTO";
+    case Cb2sControlMode::MANUAL_OFF:
+    default:
+      return "MANUAL OFF";
+  }
+}
+
+void loadCb2sControlMode() {
+  uint8_t savedMode = preferences.getUChar("cb2smode", 0);
+
+  if (savedMode > static_cast<uint8_t>(Cb2sControlMode::AUTO)) {
+    savedMode = static_cast<uint8_t>(Cb2sControlMode::MANUAL_OFF);
+  }
+
+  cb2sControlMode = static_cast<Cb2sControlMode>(savedMode);
+}
+
+void saveCb2sControlMode() {
+  preferences.putUChar("cb2smode", static_cast<uint8_t>(cb2sControlMode));
+}
+
+bool setCb2sPower(bool powerOn) {
+  WiFiClient client;
+  HTTPClient http;
+  String url = "http://" + String(OPENBEKEN_IP) + "/cm?cmnd=POWER%20";
+  url += powerOn ? "ON" : "OFF";
+
+  if (!http.begin(client, url)) {
+    cb2sLastResult = "Could not start HTTP request";
+    return false;
+  }
+
+  int responseCode = http.GET();
+  http.end();
+
+  if (responseCode < 200 || responseCode >= 300) {
+    cb2sLastResult = "OpenBeken HTTP error " + String(responseCode);
+    return false;
+  }
+
+  cb2sStateKnown = true;
+  cb2sPowerOn = powerOn;
+  cb2sLastResult = powerOn ? "ON" : "OFF";
+  Serial.printf("CB2S set to %s\n", powerOn ? "ON" : "OFF");
+  return true;
+}
+
+bool getAutoCb2sTarget(bool& targetPowerOn) {
+  bool anyColdOrError = sensorCount == 0;
+  bool anyHot = false;
+
+  for (int i = 0; i < sensorCount; i++) {
+    switch (discoveredSensors[i].alarmState) {
+      case AlarmState::TOO_COLD:
+      case AlarmState::SENSOR_ERROR:
+        anyColdOrError = true;
+        break;
+      case AlarmState::TOO_HOT:
+        anyHot = true;
+        break;
+      case AlarmState::OK:
+      default:
+        break;
+    }
+  }
+
+  // OFF has priority if sensors disagree or a sensor read fails.
+  if (anyColdOrError) {
+    targetPowerOn = false;
+    return true;
+  }
+
+  if (anyHot) {
+    targetPowerOn = true;
+    return true;
+  }
+
+  // All temperatures are in range: retain the last relay state.
+  return false;
+}
+
+void applyCb2sControl() {
+  bool targetPowerOn = false;
+  bool shouldCommand = true;
+
+  switch (cb2sControlMode) {
+    case Cb2sControlMode::MANUAL_ON:
+      targetPowerOn = true;
+      break;
+    case Cb2sControlMode::AUTO:
+      shouldCommand = getAutoCb2sTarget(targetPowerOn);
+      break;
+    case Cb2sControlMode::MANUAL_OFF:
+    default:
+      targetPowerOn = false;
+      break;
+  }
+
+  if (!shouldCommand || (cb2sStateKnown && cb2sPowerOn == targetPowerOn)) {
+    return;
+  }
+
+  setCb2sPower(targetPowerOn);
 }
 
 // ============================================================
@@ -233,6 +358,7 @@ void checkTemperatures() {
     digitalWrite(BLUE_LED_PIN, LOW);
     digitalWrite(RED_LED_PIN, LOW);
     digitalWrite(BUZZER_PIN, LOW);
+    applyCb2sControl();
     return;
   }
 
@@ -266,6 +392,7 @@ void checkTemperatures() {
   }
 
   updateAlarmOutputs();
+  applyCb2sControl();
 }
 
 // ============================================================
@@ -281,6 +408,35 @@ String htmlEscape(const String& value) {
   result.replace("\"", "&quot;");
 
   return result;
+}
+
+void appendCb2sControls(String& html, bool croatian) {
+  html += "<div class='card' style='margin-bottom:20px'>";
+  html += croatian ? "<strong>CB2S prekidac:</strong> " : "<strong>CB2S switch:</strong> ";
+  html += cb2sControlModeText(cb2sControlMode);
+  html += " | ";
+
+  if (cb2sStateKnown) {
+    html += cb2sPowerOn ? "ON" : "OFF";
+  } else {
+    html += croatian ? "stanje nije potvrdeno" : "state not confirmed";
+  }
+
+  html += "<br><span class='small'>";
+  html += htmlEscape(cb2sLastResult);
+  html += "</span><div class='actions'>";
+  html += "<form method='POST' action='/cb2s'><input type='hidden' name='mode' value='on'><button type='submit'>";
+  html += croatian ? "Rucno ukljuci" : "Manual ON";
+  html += "</button></form>";
+  html += "<form method='POST' action='/cb2s'><input type='hidden' name='mode' value='off'><button type='submit'>";
+  html += croatian ? "Rucno iskljuci" : "Manual OFF";
+  html += "</button></form>";
+  html += "<form method='POST' action='/cb2s'><input type='hidden' name='mode' value='auto'><button type='submit'>AUTO</button></form>";
+  html += "</div><span class='small'>";
+  html += croatian
+    ? "AUTO: bilo koji prenizak ili neispravan senzor iskljucuje; ako nema takvih senzora, bilo koji previsok senzor ukljucuje. U rasponu zadrzava zadnje stanje."
+    : "AUTO: any too-cold or invalid sensor turns it OFF; if none are cold/invalid, any too-hot sensor turns it ON. In range, it keeps the last state.";
+  html += "</span></div>";
 }
 
 bool assignedNumberAlreadyUsed(int number, int exceptIndex) {
@@ -509,6 +665,8 @@ Discovered DS18B20 sensors on the 1-Wire bus
   html += "</div>";
 
   html += "</div>";
+
+  appendCb2sControls(html, false);
 
   html += R"rawliteral(
 <table>
@@ -925,6 +1083,8 @@ Spojeni DS18B20 temperaturni senzori
 
   html += "</div>";
 
+  appendCb2sControls(html, true);
+
   html += R"rawliteral(
 <table>
 <tr>
@@ -1189,6 +1349,7 @@ void handleConfigure() {
   // Re-evaluate immediately using current reading.
   updateSensorAlarmState(sensor);
   updateAlarmOutputs();
+  applyCb2sControl();
 
   Serial.printf(
     "Saved sensor %s -> number=%d min=%.2f max=%.2f\n",
@@ -1196,6 +1357,32 @@ void handleConfigure() {
     sensor.assignedNumber,
     sensor.minTemp,
     sensor.maxTemp);
+
+  server.sendHeader("Location", "/");
+  server.send(303, "text/plain", "");
+}
+
+void handleCb2sControl() {
+  if (!server.hasArg("mode")) {
+    server.send(400, "text/plain", "Missing control mode");
+    return;
+  }
+
+  String mode = server.arg("mode");
+
+  if (mode == "on") {
+    cb2sControlMode = Cb2sControlMode::MANUAL_ON;
+  } else if (mode == "off") {
+    cb2sControlMode = Cb2sControlMode::MANUAL_OFF;
+  } else if (mode == "auto") {
+    cb2sControlMode = Cb2sControlMode::AUTO;
+  } else {
+    server.send(400, "text/plain", "Invalid control mode");
+    return;
+  }
+
+  saveCb2sControlMode();
+  applyCb2sControl();
 
   server.sendHeader("Location", "/");
   server.send(303, "text/plain", "");
@@ -1224,6 +1411,13 @@ void handleApi() {
   json += "{";
   json += "\"sensorCount\":";
   json += String(sensorCount);
+  json += ",\"cb2s\":{\"mode\":\"";
+  json += cb2sControlModeText(cb2sControlMode);
+  json += "\",\"stateKnown\":";
+  json += cb2sStateKnown ? "true" : "false";
+  json += ",\"powerOn\":";
+  json += cb2sPowerOn ? "true" : "false";
+  json += "}";
   json += ",\"sensors\":[";
 
   for (int i = 0; i < sensorCount; i++) {
@@ -1408,6 +1602,7 @@ void setupWifiAccessPoint() {
   // server.on("/", HTTP_GET, handleRootEN);
   server.on("/", HTTP_GET, handleRootHR);
   server.on("/configure", HTTP_POST, handleConfigure);
+  server.on("/cb2s", HTTP_POST, handleCb2sControl);
   server.on("/rescan", HTTP_POST, handleRescan);
   server.on("/api/sensors", HTTP_GET, handleApi);
   server.on("/api/history", HTTP_GET, handleHistoryApi);
@@ -1447,10 +1642,10 @@ void setup() {
   // 11-bit gives 0.125 C resolution with faster conversion than 12-bit.
   ds18b20.setResolution(11);
 
+  loadCb2sControlMode();
   discoverSensors();
-  checkTemperatures();
-
   setupWifiAccessPoint();
+  checkTemperatures();
 
   lastSensorRead = millis();
 }

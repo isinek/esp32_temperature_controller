@@ -117,3 +117,57 @@ on/off control characteristic. Wi-Fi control is the more realistic path:
 
 If OpenBeken is used, this firmware can later add relay/pump control over HTTP
 or MQTT instead of using the reserved local `PUMP_PIN`.
+
+### Confirmed CB2S / Raspberry Pi 5 flashing setup
+
+A DS-1311WN with a CB2S (BK7231N) module was successfully flashed with
+OpenBeken using a Raspberry Pi 5:
+
+- The [`hid_download_py`](https://github.com/OpenBekenIOT/hid_download_py)
+  UART flasher was run on the Raspberry Pi.
+- The OpenBeken firmware binary was obtained from the
+  [`OpenBK7231T_App` releases](https://github.com/openshwprojects/OpenBK7231T_App).
+- The Raspberry Pi UART was configured to use the 40-pin GPIO header rather
+  than its default UART route, then connected to the CB2S UART pins with TX/RX
+  crossed and a common ground.
+- The CB2S was powered from the Raspberry Pi's 3.3 V header pin.
+
+For Raspberry Pi OS on a Raspberry Pi 5, add the following to
+`/boot/firmware/config.txt` and reboot:
+
+```ini
+enable_uart=1
+dtoverlay=uart0-pi5
+```
+
+In `sudo raspi-config`, select **Interface Options → Serial Port**, answer
+**No** to the login-shell/serial-console prompt, and **Yes** to enable serial
+hardware. `uart0-pi5` exposes UART0 on the 40-pin header: GPIO14/pin 8 is TX,
+GPIO15/pin 10 is RX. Use `/dev/ttyAMA0` with the flasher; on a Pi 5,
+`/dev/serial0` normally refers to the separate debug UART instead.
+
+The switch must remain completely disconnected from AC power throughout
+programming. Do not connect any 5 V UART signal to the CB2S.
+
+### Controlling OpenBeken from the temperature controller
+
+The firmware controls OpenBeken locally over HTTP. Configure OpenBeken to join
+the `TEMPERATURE_CONTROLLER` access point, give it a fixed address of
+`192.168.10.2`, and configure its relay as channel 1. If another address is
+used, update `OPENBEKEN_IP` near the top of `temperature_controller.ino` before
+building.
+
+The controller web page provides **Manual ON**, **Manual OFF**, and **AUTO**
+buttons. The selected mode is retained in NVS across ESP32 restarts. AUTO uses
+each sensor's configured temperature limits:
+
+- Any sensor below its minimum limit, any invalid sensor, or no discovered
+  sensors turns the CB2S relay **OFF**.
+- Otherwise, any sensor above its maximum limit turns the relay **ON**.
+- If every sensor is within range, the relay keeps its most recently confirmed
+  state.
+
+OFF has priority when sensors disagree. This avoids powering the load when a
+sensor is too cold or cannot be read. Commands use OpenBeken's
+Tasmota-compatible HTTP endpoint, for example
+`http://192.168.10.2/cm?cmnd=POWER%20ON`.
